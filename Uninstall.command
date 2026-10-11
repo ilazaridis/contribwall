@@ -1,6 +1,8 @@
 #!/bin/sh
 # Double-click this in Finder to remove contribwall.
 cd "$(dirname "$0")" || exit 1
-./uninstall.sh
+sh ./uninstall.sh
+status=$?
 printf '  Press return to close this window.\n'
-read -r _
+read -r _ || true
+exit "$status"
