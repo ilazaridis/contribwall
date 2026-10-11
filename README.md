@@ -49,9 +49,16 @@ contribwall off             # take it off
 **macOS** · **python3 3.7+** (`xcode-select --install`) · **[GitHub CLI](https://cli.github.com)**, signed in ·
 **Chrome**, Brave, Edge or Chromium in `/Applications`
 
-It reads *your* contributions through your own `gh` login, so there's no token to
-paste anywhere. Private contributions count too, once you grant `read:user` —
-the installer offers to ask for it.
+The big number is the one on your GitHub profile — contribwall reads the same
+contribution grid the site draws, so the two always agree. (GitHub's API returns
+a slightly different total: it buckets days in UTC rather than your timezone.
+If the page can't be read, contribwall falls back to the API and says so in
+`contribwall status`.)
+
+Private contributions are included exactly as your profile shows them — turn on
+*Include private contributions on my profile* in GitHub settings if you want them
+counted. `gh` is used only to look up your username; set `user` in the config to
+skip that.
 
 <br>
 
@@ -66,6 +73,7 @@ the installer offers to ask for it.
 | `refreshSeconds` | how often it checks, `5`–`3600` | next refresh |
 | `display` | screen name fragment, or `""` for the second one | run `contribwall` |
 | `port` | local port, default `8723` | restart the server, then `contribwall` |
+| `user` | GitHub login; empty asks `gh` once | next refresh |
 
 <br>
 
