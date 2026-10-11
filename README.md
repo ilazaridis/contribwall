@@ -46,19 +46,20 @@ contribwall off             # take it off
 
 ## Needs
 
-**macOS** · **python3 3.7+** (`xcode-select --install`) · **[GitHub CLI](https://cli.github.com)**, signed in ·
+**macOS** · **python3 3.7+** (`xcode-select --install`) ·
 **Chrome**, Brave, Edge or Chromium in `/Applications`
 
-The big number is the one on your GitHub profile — contribwall reads the same
-contribution grid the site draws, so the two always agree. (GitHub's API returns
-a slightly different total: it buckets days in UTC rather than your timezone.
-If the page can't be read, contribwall falls back to the API and says so in
-`contribwall status`.)
+No token, no API key, nothing to sign into. The big number is the one on your
+GitHub profile, because contribwall reads the same contribution grid the site
+draws — so the two always agree. The installer asks for your username; if you
+have the **[GitHub CLI](https://cli.github.com)** signed in, it picks it up
+without asking.
 
-Private contributions are included exactly as your profile shows them — turn on
-*Include private contributions on my profile* in GitHub settings if you want them
-counted. `gh` is used only to look up your username; set `user` in the config to
-skip that.
+Private contributions are counted exactly as your profile counts them — turn on
+*Include private contributions on my profile* in GitHub settings if you want
+them in. (GitHub's API reports a slightly different total, bucketing days in UTC
+rather than your timezone. contribwall only falls back to it if the page can't
+be read, and `contribwall status` says when that happens.)
 
 <br>
 
@@ -73,16 +74,16 @@ skip that.
 | `refreshSeconds` | how often it checks, `5`–`3600` | next refresh |
 | `display` | screen name fragment, or `""` for the second one | run `contribwall` |
 | `port` | local port, default `8723` | restart the server, then `contribwall` |
-| `user` | GitHub login; empty asks `gh` once | next refresh |
+| `user` | whose profile to read | next refresh |
 
 <br>
 
 ## How it works
 
-A small Python server asks the GitHub CLI for your contribution calendar and
+A small Python server reads your public contribution grid from github.com and
 serves one page on `127.0.0.1`. A browser window sits fullscreen on your screen
-and re-polls it every minute. Two `launchd` agents keep the server up and put the
-window back after a reboot. contribwall itself talks to nothing but GitHub and
+and re-polls it every minute. Two `launchd` agents keep the server up and put
+the window back after a reboot. contribwall talks to nothing but github.com and
 that local port.
 
 <br>
