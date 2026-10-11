@@ -16,7 +16,9 @@ PATH_MARKER="# added by contribwall"
 
 scratch=""
 cleanup() { [ -n "$scratch" ] && rm -rf "$scratch"; return 0; }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+# Interrupted means stop, not carry on half-installed.
+trap 'cleanup; exit 130' HUP INT TERM
 
 say()  { printf '  %s\n' "$1"; }
 fail() { printf '\n  %s\n\n' "$1" >&2; exit 1; }
@@ -115,7 +117,8 @@ fi
 # --- launchd agents ---------------------------------------------------------
 # Built with plistlib so paths are escaped and never parsed as shell.
 gh_dir=$(dirname "$(command -v gh)")
-agent_path="$gh_dir:/usr/bin:/bin:/usr/sbin:/sbin"
+python_dir=$(dirname "$PYTHON")
+agent_path="$python_dir:$gh_dir:/usr/bin:/bin:/usr/sbin:/sbin"
 
 "$PYTHON" - "$AGENTS/$SERVER_AGENT.plist" "$SERVER_AGENT" "$PYTHON" "$DATA" "$agent_path" \
           "${XDG_DATA_HOME:-}" "${XDG_CONFIG_HOME:-}" <<'PY'
