@@ -38,7 +38,6 @@ PYTHON=$(command -v python3)
 "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)' 2>/dev/null \
     || fail "Needs python3 3.7 or newer. Run: xcode-select --install"
 
-command -v gh >/dev/null 2>&1 || fail "Needs the GitHub CLI. Run: brew install gh"
 
 browser=""
 for name in "Google Chrome" "Brave Browser" "Microsoft Edge" "Chromium"; do
@@ -49,29 +48,7 @@ for name in "Google Chrome" "Brave Browser" "Microsoft Edge" "Chromium"; do
 done
 [ -n "$browser" ] || fail "Needs Chrome, Brave, Edge or Chromium in /Applications."
 
-if ! gh auth status >/dev/null 2>&1; then
-    # Piped from curl, stdin is the script itself, so sign-in needs the terminal.
-    if can_ask; then
-        say "GitHub CLI is not signed in. Starting sign-in..."
-        printf '\n'
-        gh auth login < /dev/tty || fail "Sign-in did not finish. Run 'gh auth login', then try again."
-    else
-        fail "GitHub CLI is not signed in. Run 'gh auth login', then try again."
-    fi
-fi
-
-say "python3, gh and $browser found."
-
-# Private contributions only show up when the token carries read:user.
-if ! gh auth status 2>&1 | grep -q "read:user"; then
-    if can_ask; then
-        say "Asking GitHub for read:user, so private contributions count..."
-        gh auth refresh -h github.com -s read:user < /dev/tty \
-            || say "Skipped. Private contributions will not be counted."
-    else
-        say "Note: run 'gh auth refresh -h github.com -s read:user' to count private work."
-    fi
-fi
+say "python3 and $browser found."
 
 # --- source -----------------------------------------------------------------
 here=""
@@ -175,6 +152,30 @@ done
 # A just-killed server can still hold the port for a moment.
 sleep 2
 launchctl bootstrap "gui/$uid" "$AGENTS/$SERVER_AGENT.plist"
+
+# --- whose contributions ----------------------------------------------------
+# The data comes from a public profile page, so all that is needed is a login.
+# The GitHub CLI knows it if it is signed in; otherwise just ask.
+user=$("$PYTHON" "$DATA/server.py" --get user)
+if [ -z "$user" ]; then
+    if command -v gh >/dev/null 2>&1; then
+        user=$(gh api user --jq .login 2>/dev/null || echo "")
+    fi
+    if [ -n "$user" ]; then
+        "$PYTHON" "$DATA/server.py" --set user "$user"
+        say "Reading contributions for $user."
+    elif can_ask; then
+        printf '  Your GitHub username: '
+        read -r user < /dev/tty || user=""
+        if [ -n "$user" ]; then
+            "$PYTHON" "$DATA/server.py" --set user "$user"
+        else
+            fail "Need a GitHub username. Re-run, or put \"user\" in $CONFIG."
+        fi
+    else
+        fail "Could not work out your GitHub username. Put \"user\" in $CONFIG, or sign in with 'gh auth login'."
+    fi
+fi
 
 # --- which screen -----------------------------------------------------------
 screens=$(osascript -l JavaScript "$DATA/pick-display.js" --list | wc -l | tr -d ' ')
