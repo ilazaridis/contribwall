@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>contribwall</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body {
+    display: flex; flex-direction: column;
+    cursor: none; user-select: none; -webkit-user-select: none;
+    font-family: system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: #fff; -webkit-font-smoothing: antialiased;
+  }
+
+  /* Hero figure: the year total. Proportional figures on purpose -- tabular-nums
+     gives every digit a '0' width, which reads loose at display sizes. */
+  #hero { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  #total {
+    font-weight: 900; font-size: 100px;
+    letter-spacing: -0.035em; line-height: 0.8; white-space: nowrap;
+  }
+
+  /* One column per day, value on the cap. Every value is directly labelled, so
+     there is no y-axis to carry the rest. */
+  #chart { position: relative; height: 38vh; display: flex; align-items: stretch; padding: 0 2.5vw; }
+  #baseline { position: absolute; left: 2.5vw; right: 2.5vw; bottom: 4.6vh; height: 1px; background: #242424; }
+  .day { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .track { position: relative; flex: 1; }
+  .bar {
+    position: absolute; bottom: 0; left: 16%; width: 68%;
+    transition: height .6s ease, background-color .6s ease;
+  }
+  /* Values stay in text ink, never the data colour. */
+  .val {
+    position: absolute; left: 0; width: 100%; text-align: center;
+    font-weight: 800; letter-spacing: -0.02em; white-space: nowrap;
+    transition: bottom .6s ease;
+  }
+  .dow {
+    height: 4.6vh; line-height: 4.6vh; text-align: center;
+    font-weight: 600; color: #5a5a5a; white-space: nowrap;
+  }
+  /* Bars animate between updates, but must land at full height on the first
+     paint -- otherwise they grow up from zero and anything sampling the page
+     early (a screenshot, a display waking up) catches an empty chart. */
+  #chart.no-anim .bar, #chart.no-anim .val { transition: none; }
+</style>
+</head>
+<body>
+<div id="hero"><div id="total"></div></div>
+<div id="chart"><div id="baseline"></div></div>
+<script>
+  // Sequential yellow-green -> deep green, ordered light to dark. Reversed when
+  // config asks for brighter-is-busier. The deepest step clears 3:1 on black.
+  var RAMP = ['#e8f58c', '#b7e06a', '#79c451', '#45a046', '#217a3c'];
+  var BAR_MAX = 80;        // % of the track; the rest is headroom for the value label
+  var VAL_MAX_VH = 6.5;    // cap on the value label, so a short range isn't absurd
+  var DIGIT_EM = 0.62;     // rough advance width per digit at weight 800
+
+  var total = document.getElementById('total');
+  var hero = document.getElementById('hero');
+  var chart = document.getElementById('chart');
+  var cols = [];
+  var shown = [];
+  var ramp = RAMP;
+  var timer = null;
+  var refreshMs = 0;
+
+  function build(n) {
+    while (chart.children.length > 1) {   // child 0 is #baseline
+      chart.removeChild(chart.lastChild);
+    }
+    cols = [];
+    for (var i = 0; i < n; i++) {
+      var day = document.createElement('div');
+      day.className = 'day';
+      var track = document.createElement('div');
+      track.className = 'track';
+      var val = document.createElement('div');
+      val.className = 'val';
+      var bar = document.createElement('div');
+      bar.className = 'bar';
+      var dow = document.createElement('div');
+      dow.className = 'dow';
+      track.appendChild(val);
+      track.appendChild(bar);
+      day.appendChild(track);
+      day.appendChild(dow);
+      chart.appendChild(day);
+      cols.push({ track: track, val: val, bar: bar, dow: dow });
+    }
+  }
+
+  // Scale the total to fill the space above the chart, whatever its digit count.
+  function fitTotal() {
+    if (!total.textContent) return;
+    total.style.fontSize = '100px';
+    var w = total.getBoundingClientRect().width || 1;
+    var byWidth = (hero.clientWidth * 0.92) / w * 100;
+    var byHeight = (hero.clientHeight * 0.80) / 0.72;  // digits' cap height ~0.72em
+    total.style.fontSize = Math.floor(Math.min(byWidth, byHeight)) + 'px';
+  }
+
+  function paint() {
+    var days = shown;
+    if (!days.length || !cols.length) return;
+
+    var max = 0, digits = 1;
+    for (var i = 0; i < days.length; i++) {
+      if (days[i].count > max) max = days[i].count;
+      digits = Math.max(digits, String(days[i].count).length);
+    }
+
+    // Size the value labels so they always fit their band -- a label that would
+    // collide with its neighbour gets smaller, never clipped.
+    var band = cols[0].track.offsetWidth || 1;
+    var vh = window.innerHeight / 100;
+    var valPx = Math.min(VAL_MAX_VH * vh, (band * 0.92) / (digits * DIGIT_EM));
+
+    // Dense ranges can't carry three-letter weekdays; fall back to initials,
+    // then to a day-of-month tick on Mondays only.
+    var mode = days.length <= 7 ? 'full' : (days.length <= 16 ? 'letter' : 'monday');
+    var dowPx = Math.max(11, Math.min(1.9 * vh, band * (mode === 'full' ? 0.26 : 0.5)));
+    var radius = Math.max(2, Math.min(8, band * 0.68 / 7));
+
+    for (var j = 0; j < cols.length; j++) {
+      var col = cols[j], day = days[j];
+      if (!day) continue;
+      var share = max > 0 ? day.count / max : 0;
+      var step = Math.min(ramp.length - 1, Math.max(0, Math.ceil(share * ramp.length) - 1));
+
+      col.bar.style.height = (share * BAR_MAX) + '%';
+      col.bar.style.backgroundColor = ramp[step];
+      col.bar.style.borderRadius = radius + 'px ' + radius + 'px 0 0';
+
+      col.val.style.bottom = 'calc(' + (share * BAR_MAX) + '% + 0.8vh)';
+      col.val.style.fontSize = valPx + 'px';
+      col.val.textContent = String(day.count);
+
+      col.dow.style.fontSize = dowPx + 'px';
+      col.dow.style.letterSpacing = mode === 'full' ? '.18em' : '0';
+      col.dow.textContent = mode === 'full' ? day.dow
+                          : mode === 'letter' ? day.dow.charAt(0)
+                          : (day.wd === 0 ? String(day.dom) : '');
+    }
+  }
+
+  function arm(ms) {
+    if (ms === refreshMs && timer) return;
+    refreshMs = ms;
+    if (timer) clearInterval(timer);
+    timer = setInterval(tick, refreshMs);
+  }
+
+  function render(data) {
+    arm(Math.max(5, data.refresh || 60) * 1000);
+    ramp = data.ramp === 'brighter' ? RAMP.slice().reverse() : RAMP;
+
+    if (typeof data.count === 'number' && String(data.count) !== total.textContent) {
+      total.textContent = String(data.count);
+      fitTotal();
+    }
+    var days = data.days || [];
+    if (!days.length) return;
+    shown = days;
+    if (days.length !== cols.length) {
+      build(days.length);
+      chart.classList.add('no-anim');
+      paint();
+      void chart.offsetWidth;   // flush the un-animated state before re-enabling
+      chart.classList.remove('no-anim');
+      return;
+    }
+    paint();
+  }
+
+  function tick() {
+    fetch('/count', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(render)            // a failed refresh leaves the last good values up
+      .catch(function () {});
+  }
+
+  window.addEventListener('resize', function () { fitTotal(); paint(); });
+  arm(60000);
+  tick();
+</script>
+</body>
+</html>
