@@ -104,7 +104,7 @@ case "${1:-open}" in
         fi
 
         if [ -n "${2:-}" ]; then
-            if ! list_displays | cut -f2 | grep -qi -- "$2"; then
+            if ! list_displays | cut -f2 | grep -Fqi -- "$2"; then
                 echo "contribwall: no connected screen matches \"$2\"." >&2
                 echo "Run 'contribwall displays' to see them." >&2
                 exit 1
@@ -150,13 +150,13 @@ case "${1:-open}" in
             *)                   days="$2" ;;
         esac
         cfg_set days "$days"
-        echo "Range: $days days (on screen within a minute)"
+        echo "Range: $days days (on screen at the next refresh)"
         exit 0
         ;;
 
     ramp)
         cfg_set ramp "${2:-}"
-        echo "Ramp: a busy day is ${2:-} (on screen within a minute)"
+        echo "Ramp: a busy day is ${2:-} (on screen at the next refresh)"
         exit 0
         ;;
 
