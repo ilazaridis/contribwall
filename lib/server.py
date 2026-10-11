@@ -170,7 +170,9 @@ def current_data():
     # than each spawning their own `gh` process.
     with _fetch_lock:
         with _lock:
-            if _fresh(time.time()):
+            now = time.time()
+            # Another request may have refreshed, or failed, while we queued.
+            if _fresh(now) or now < _cache["retry_after"]:
                 return _cache["data"], _cache["error"]
         try:
             data = fetch_data()
