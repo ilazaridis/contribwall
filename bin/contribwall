@@ -2,13 +2,12 @@
 # contribwall -- your GitHub contributions, full screen.
 set -eu
 
-DIR="${XDG_DATA_HOME:-$HOME/.local/share}/contribwall"
-CONTRIBWALL_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/contribwall/config.json"
-export CONTRIBWALL_CONFIG
-PROFILE="$DIR/browser-profile"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/contribwall"
+PROFILE="$DATA/browser-profile"
+AGENTS="$HOME/Library/LaunchAgents"
 AGENT_SERVER="com.github.contribwall.server"
 AGENT_AWAKE="com.github.contribwall.awake"
-AGENTS="$HOME/Library/LaunchAgents"
+TAB=$(printf '\t')
 
 usage() {
     cat <<'USAGE'
@@ -16,52 +15,33 @@ contribwall -- your GitHub contributions, full screen.
 
   contribwall                 put it on screen
   contribwall off             take it off
+  contribwall displays        list the screens it can use
+  contribwall display         choose a screen
+  contribwall display <name>  choose it by name, or "auto"
   contribwall range <r>       week | 14 | month | 1-90
-  contribwall display <name>  screen to use, or "auto" for the second one
   contribwall ramp <r>        darker | brighter  (which end is a busy day)
   contribwall awake on|off    stop the screens sleeping
   contribwall status          what is running, and what it is showing
 
-Settings live in ~/.config/contribwall/config.json and apply within a minute.
+Settings live in ~/.config/contribwall/config.json.
 USAGE
 }
 
-cfg() {
-    python3 -c '
-import json, os, sys
-values = {"days": 14, "display": "", "port": 8723, "refreshSeconds": 60, "ramp": "darker"}
-try:
-    with open(os.environ["CONTRIBWALL_CONFIG"]) as fh:
-        stored = json.load(fh)
-    if isinstance(stored, dict):
-        values.update(stored)
-except Exception:
-    pass
-print(values.get(sys.argv[1], ""))
-' "$1"
+# Settings go through the server's own validation, so the two never disagree.
+cfg()     { python3 "$DATA/server.py" --get "$1"; }
+cfg_set() { python3 "$DATA/server.py" --set "$1" "$2"; }
+
+# pkill matches a regex, so a path with dots would match more than it should.
+ere_quote() {
+    python3 -c 'import sys
+print("".join("\\" + c if c in ".[]()*+?{}|^$\\" else c for c in sys.argv[1]))' "$1"
 }
 
-cfg_set() {
-    python3 -c '
-import json, os, sys
-path = os.environ["CONTRIBWALL_CONFIG"]
-os.makedirs(os.path.dirname(path), exist_ok=True)
-try:
-    with open(path) as fh:
-        values = json.load(fh)
-    if not isinstance(values, dict):
-        values = {}
-except Exception:
-    values = {}
-key, raw = sys.argv[1], sys.argv[2]
-try:
-    values[key] = int(raw)
-except ValueError:
-    values[key] = raw
-with open(path, "w") as fh:
-    json.dump(values, fh, indent=2)
-    fh.write("\n")
-' "$1" "$2"
+# No leading dashes: pgrep/pkill would read them as options.
+browser_pattern() { ere_quote "user-data-dir=$PROFILE"; }
+
+stop_window() {
+    pkill -f "$(browser_pattern)" 2>/dev/null || true
 }
 
 find_browser() {
@@ -74,6 +54,31 @@ find_browser() {
     return 1
 }
 
+# Tell our own server apart from anything else holding the port.
+server_ok() {
+    curl -fsS --max-time 5 "http://127.0.0.1:$1/health" 2>/dev/null | grep -q contribwall
+}
+
+list_displays() { osascript -l JavaScript "$DATA/pick-display.js" --list; }
+
+show_displays() {
+    current=$(cfg display)
+    printf '\n'
+    list_displays | while IFS="$TAB" read -r index name size main; do
+        marker="  "
+        if [ -n "$current" ]; then
+            case "$(printf '%s' "$name" | tr 'A-Z' 'a-z')" in
+                *"$(printf '%s' "$current" | tr 'A-Z' 'a-z')"*) marker=" *" ;;
+            esac
+        fi
+        printf '%s %s) %-26s %-11s %s\n' "$marker" "$index" "$name" "$size" "$main"
+    done
+    printf '\n'
+    if [ -z "$current" ]; then
+        printf '  Using: auto (the second screen, if there is one)\n\n'
+    fi
+}
+
 case "${1:-open}" in
     -h|--help|help)
         usage
@@ -81,8 +86,57 @@ case "${1:-open}" in
         ;;
 
     off)
-        pkill -f "user-data-dir=$PROFILE" 2>/dev/null || true
+        stop_window
         exit 0
+        ;;
+
+    displays)
+        show_displays
+        exit 0
+        ;;
+
+    display)
+        if [ "${2:-}" = "auto" ]; then
+            cfg_set display ""
+            echo "Display: auto (the second screen, if there is one)"
+            echo "Run 'contribwall' to move it."
+            exit 0
+        fi
+
+        if [ -n "${2:-}" ]; then
+            if ! list_displays | cut -f2 | grep -qi -- "$2"; then
+                echo "contribwall: no connected screen matches \"$2\"." >&2
+                echo "Run 'contribwall displays' to see them." >&2
+                exit 1
+            fi
+            cfg_set display "$2"
+            echo "Display: $2"
+            echo "Run 'contribwall' to move it."
+            exit 0
+        fi
+
+        # No name given: show what is connected and ask.
+        show_displays
+        if [ ! -r /dev/tty ]; then
+            echo "contribwall: no terminal to ask on; use 'contribwall display <name>'." >&2
+            exit 1
+        fi
+        count=$(list_displays | wc -l | tr -d ' ')
+        printf '  Which screen? [1-%s] ' "$count"
+        read -r choice < /dev/tty || choice=""
+        case "$choice" in
+            '' | *[!0-9]*)
+                echo "contribwall: not a number, nothing changed." >&2
+                exit 1 ;;
+        esac
+        if [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+            echo "contribwall: pick a number between 1 and $count." >&2
+            exit 1
+        fi
+        chosen=$(list_displays | sed -n "${choice}p" | cut -f2)
+        cfg_set display "$chosen"
+        printf '\n  Display: %s\n\n' "$chosen"
+        exec "$0"
         ;;
 
     range)
@@ -90,42 +144,19 @@ case "${1:-open}" in
             week)                days=7 ;;
             fortnight|two-weeks) days=14 ;;
             month)               days=30 ;;
-            '' | *[!0-9]*)
+            '')
                 echo "usage: contribwall range week|14|month|<1-90>" >&2
                 exit 1 ;;
             *)                   days="$2" ;;
         esac
-        if [ "$days" -lt 1 ] || [ "$days" -gt 90 ]; then
-            echo "contribwall: range must be 1-90 days" >&2
-            exit 1
-        fi
         cfg_set days "$days"
         echo "Range: $days days (on screen within a minute)"
         exit 0
         ;;
 
-    display)
-        if [ -z "${2:-}" ]; then
-            echo "usage: contribwall display <name fragment>|auto" >&2
-            exit 1
-        fi
-        if [ "$2" = "auto" ]; then
-            cfg_set display ""
-            echo "Display: auto (second screen if there is one)"
-        else
-            cfg_set display "$2"
-            echo "Display: $2"
-        fi
-        echo "Run 'contribwall' to move it."
-        exit 0
-        ;;
-
     ramp)
-        case "${2:-}" in
-            darker|brighter) cfg_set ramp "$2" ;;
-            *) echo "usage: contribwall ramp darker|brighter" >&2; exit 1 ;;
-        esac
-        echo "Ramp: a busy day is $2 (on screen within a minute)"
+        cfg_set ramp "${2:-}"
+        echo "Ramp: a busy day is ${2:-} (on screen within a minute)"
         exit 0
         ;;
 
@@ -133,19 +164,14 @@ case "${1:-open}" in
         uid=$(id -u)
         case "${2:-}" in
             on)
-                cat > "$AGENTS/$AGENT_AWAKE.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>$AGENT_AWAKE</string>
-    <key>ProgramArguments</key>
-    <array><string>/usr/bin/caffeinate</string><string>-d</string></array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-</dict>
-</plist>
-PLIST
+                python3 -c 'import plistlib, sys
+with open(sys.argv[1], "wb") as fh:
+    plistlib.dump({
+        "Label": sys.argv[2],
+        "ProgramArguments": ["/usr/bin/caffeinate", "-d"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+    }, fh)' "$AGENTS/$AGENT_AWAKE.plist" "$AGENT_AWAKE"
                 launchctl bootout "gui/$uid/$AGENT_AWAKE" 2>/dev/null || true
                 launchctl bootstrap "gui/$uid" "$AGENTS/$AGENT_AWAKE.plist"
                 echo "Screens will stay awake. This holds every display on, not just the wall."
@@ -164,16 +190,20 @@ PLIST
 
     status)
         port=$(cfg port)
+        display=$(cfg display)
+        [ -n "$display" ] || display="auto"
         echo "Range:    $(cfg days) days"
-        echo "Display:  $(cfg display | sed 's/^$/auto/')"
+        echo "Display:  $display"
         echo "Ramp:     busy days $(cfg ramp)"
         echo "Refresh:  every $(cfg refreshSeconds)s"
-        if launchctl print "gui/$(id -u)/$AGENT_SERVER" >/dev/null 2>&1; then
-            echo "Server:   running on 127.0.0.1:$port"
+        if server_ok "$port"; then
+            echo "Server:   answering on 127.0.0.1:$port"
+        elif launchctl print "gui/$(id -u)/$AGENT_SERVER" >/dev/null 2>&1; then
+            echo "Server:   loaded but not answering on $port (see $DATA/server.log)"
         else
             echo "Server:   not loaded"
         fi
-        if pgrep -f "user-data-dir=$PROFILE" >/dev/null 2>&1; then
+        if pgrep -f "$(browser_pattern)" >/dev/null 2>&1; then
             echo "Screen:   on"
         else
             echo "Screen:   off"
@@ -196,30 +226,35 @@ port=$(cfg port)
 url="http://127.0.0.1:$port/"
 
 browser=$(find_browser) || {
-    echo "contribwall: needs a Chromium browser (Chrome, Brave, Edge or Chromium)." >&2
+    echo "contribwall: needs Chrome, Brave, Edge or Chromium in /Applications." >&2
     exit 1
 }
 
 # At login this can run before the server is listening, and the browser would
-# sit on an error page forever, so wait for it to answer first.
+# sit on an error page forever, so wait for our own server to answer first.
 tries=0
-until curl -fsS --max-time 5 -o /dev/null "$url"; do
+until server_ok "$port"; do
     tries=$((tries + 1))
     if [ "$tries" -ge 30 ]; then
-        echo "contribwall: no server at $url after ${tries}s" >&2
-        echo "try: launchctl kickstart -k gui/$(id -u)/$AGENT_SERVER" >&2
+        if curl -fsS --max-time 5 -o /dev/null "$url" 2>/dev/null; then
+            echo "contribwall: something else is using port $port." >&2
+            echo "Change it in ~/.config/contribwall/config.json." >&2
+        else
+            echo "contribwall: no server at $url after ${tries}s" >&2
+            echo "try: launchctl kickstart -k gui/$(id -u)/$AGENT_SERVER" >&2
+        fi
         exit 1
     fi
     sleep 1
 done
 
-geometry=$(osascript -l JavaScript "$DIR/pick-display.js" "$target")
+geometry=$(osascript -l JavaScript "$DATA/pick-display.js" "$target")
 set -- $geometry
 x="$1"; y="$2"; w="$3"; h="$4"
 shift 4
 echo "Display: $* at ${x},${y} ${w}x${h}"
 
-pkill -f "user-data-dir=$PROFILE" 2>/dev/null || true
+stop_window
 sleep 1
 
 # The browser remembers window bounds in its profile and will restore them over
