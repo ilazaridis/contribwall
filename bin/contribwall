@@ -1,0 +1,235 @@
+#!/bin/sh
+# contribwall -- your GitHub contributions, full screen.
+set -eu
+
+DIR="${XDG_DATA_HOME:-$HOME/.local/share}/contribwall"
+CONTRIBWALL_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/contribwall/config.json"
+export CONTRIBWALL_CONFIG
+PROFILE="$DIR/browser-profile"
+AGENT_SERVER="com.github.contribwall.server"
+AGENT_AWAKE="com.github.contribwall.awake"
+AGENTS="$HOME/Library/LaunchAgents"
+
+usage() {
+    cat <<'USAGE'
+contribwall -- your GitHub contributions, full screen.
+
+  contribwall                 put it on screen
+  contribwall off             take it off
+  contribwall range <r>       week | 14 | month | 1-90
+  contribwall display <name>  screen to use, or "auto" for the second one
+  contribwall ramp <r>        darker | brighter  (which end is a busy day)
+  contribwall awake on|off    stop the screens sleeping
+  contribwall status          what is running, and what it is showing
+
+Settings live in ~/.config/contribwall/config.json and apply within a minute.
+USAGE
+}
+
+cfg() {
+    python3 -c '
+import json, os, sys
+values = {"days": 14, "display": "", "port": 8723, "refreshSeconds": 60, "ramp": "darker"}
+try:
+    with open(os.environ["CONTRIBWALL_CONFIG"]) as fh:
+        stored = json.load(fh)
+    if isinstance(stored, dict):
+        values.update(stored)
+except Exception:
+    pass
+print(values.get(sys.argv[1], ""))
+' "$1"
+}
+
+cfg_set() {
+    python3 -c '
+import json, os, sys
+path = os.environ["CONTRIBWALL_CONFIG"]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+try:
+    with open(path) as fh:
+        values = json.load(fh)
+    if not isinstance(values, dict):
+        values = {}
+except Exception:
+    values = {}
+key, raw = sys.argv[1], sys.argv[2]
+try:
+    values[key] = int(raw)
+except ValueError:
+    values[key] = raw
+with open(path, "w") as fh:
+    json.dump(values, fh, indent=2)
+    fh.write("\n")
+' "$1" "$2"
+}
+
+find_browser() {
+    for name in "Google Chrome" "Brave Browser" "Microsoft Edge" "Chromium"; do
+        if [ -d "/Applications/$name.app" ]; then
+            echo "$name"
+            return 0
+        fi
+    done
+    return 1
+}
+
+case "${1:-open}" in
+    -h|--help|help)
+        usage
+        exit 0
+        ;;
+
+    off)
+        pkill -f "user-data-dir=$PROFILE" 2>/dev/null || true
+        exit 0
+        ;;
+
+    range)
+        case "${2:-}" in
+            week)                days=7 ;;
+            fortnight|two-weeks) days=14 ;;
+            month)               days=30 ;;
+            '' | *[!0-9]*)
+                echo "usage: contribwall range week|14|month|<1-90>" >&2
+                exit 1 ;;
+            *)                   days="$2" ;;
+        esac
+        if [ "$days" -lt 1 ] || [ "$days" -gt 90 ]; then
+            echo "contribwall: range must be 1-90 days" >&2
+            exit 1
+        fi
+        cfg_set days "$days"
+        echo "Range: $days days (on screen within a minute)"
+        exit 0
+        ;;
+
+    display)
+        if [ -z "${2:-}" ]; then
+            echo "usage: contribwall display <name fragment>|auto" >&2
+            exit 1
+        fi
+        if [ "$2" = "auto" ]; then
+            cfg_set display ""
+            echo "Display: auto (second screen if there is one)"
+        else
+            cfg_set display "$2"
+            echo "Display: $2"
+        fi
+        echo "Run 'contribwall' to move it."
+        exit 0
+        ;;
+
+    ramp)
+        case "${2:-}" in
+            darker|brighter) cfg_set ramp "$2" ;;
+            *) echo "usage: contribwall ramp darker|brighter" >&2; exit 1 ;;
+        esac
+        echo "Ramp: a busy day is $2 (on screen within a minute)"
+        exit 0
+        ;;
+
+    awake)
+        uid=$(id -u)
+        case "${2:-}" in
+            on)
+                cat > "$AGENTS/$AGENT_AWAKE.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$AGENT_AWAKE</string>
+    <key>ProgramArguments</key>
+    <array><string>/usr/bin/caffeinate</string><string>-d</string></array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+</dict>
+</plist>
+PLIST
+                launchctl bootout "gui/$uid/$AGENT_AWAKE" 2>/dev/null || true
+                launchctl bootstrap "gui/$uid" "$AGENTS/$AGENT_AWAKE.plist"
+                echo "Screens will stay awake. This holds every display on, not just the wall."
+                ;;
+            off)
+                launchctl bootout "gui/$uid/$AGENT_AWAKE" 2>/dev/null || true
+                rm -f "$AGENTS/$AGENT_AWAKE.plist"
+                echo "Screens may sleep again."
+                ;;
+            *)
+                echo "usage: contribwall awake on|off" >&2
+                exit 1 ;;
+        esac
+        exit 0
+        ;;
+
+    status)
+        port=$(cfg port)
+        echo "Range:    $(cfg days) days"
+        echo "Display:  $(cfg display | sed 's/^$/auto/')"
+        echo "Ramp:     busy days $(cfg ramp)"
+        echo "Refresh:  every $(cfg refreshSeconds)s"
+        if launchctl print "gui/$(id -u)/$AGENT_SERVER" >/dev/null 2>&1; then
+            echo "Server:   running on 127.0.0.1:$port"
+        else
+            echo "Server:   not loaded"
+        fi
+        if pgrep -f "user-data-dir=$PROFILE" >/dev/null 2>&1; then
+            echo "Screen:   on"
+        else
+            echo "Screen:   off"
+        fi
+        if launchctl print "gui/$(id -u)/$AGENT_AWAKE" >/dev/null 2>&1; then
+            echo "Awake:    screens held on"
+        else
+            echo "Awake:    screens may sleep"
+        fi
+        exit 0
+        ;;
+esac
+
+# --- put it on screen -------------------------------------------------------
+target="${1:-}"
+[ "$target" = "open" ] && target=""
+[ -z "$target" ] && target=$(cfg display)
+
+port=$(cfg port)
+url="http://127.0.0.1:$port/"
+
+browser=$(find_browser) || {
+    echo "contribwall: needs a Chromium browser (Chrome, Brave, Edge or Chromium)." >&2
+    exit 1
+}
+
+# At login this can run before the server is listening, and the browser would
+# sit on an error page forever, so wait for it to answer first.
+tries=0
+until curl -fsS --max-time 5 -o /dev/null "$url"; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 30 ]; then
+        echo "contribwall: no server at $url after ${tries}s" >&2
+        echo "try: launchctl kickstart -k gui/$(id -u)/$AGENT_SERVER" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+geometry=$(osascript -l JavaScript "$DIR/pick-display.js" "$target")
+set -- $geometry
+x="$1"; y="$2"; w="$3"; h="$4"
+shift 4
+echo "Display: $* at ${x},${y} ${w}x${h}"
+
+pkill -f "user-data-dir=$PROFILE" 2>/dev/null || true
+sleep 1
+
+# The browser remembers window bounds in its profile and will restore them over
+# the flags below, so start from a clean profile and the geometry is always ours.
+rm -rf "$PROFILE"
+
+open -na "$browser" --args \
+    --user-data-dir="$PROFILE" \
+    --app="$url" \
+    --window-position="${x},${y}" \
+    --window-size="${w},${h}" \
+    --start-fullscreen \
+    --no-first-run --no-default-browser-check --disable-sync --noerrdialogs
