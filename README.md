@@ -61,9 +61,9 @@ the installer offers to ask for it.
 
 | | | |
 |---|---|---|
-| `days` | how far back the bars go, `1`–`90` | within a minute |
-| `ramp` | `darker` or `brighter` — which end of the green is a busy day | within a minute |
-| `refreshSeconds` | how often it checks, `5`–`3600` | within a minute |
+| `days` | how far back the bars go, `1`–`90` | next refresh |
+| `ramp` | `darker` or `brighter` — which end of the green is a busy day | next refresh |
+| `refreshSeconds` | how often it checks, `5`–`3600` | next refresh |
 | `display` | screen name fragment, or `""` for the second one | run `contribwall` |
 | `port` | local port, default `8723` | restart the server, then `contribwall` |
 
