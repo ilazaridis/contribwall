@@ -211,6 +211,16 @@ with open(sys.argv[1], "wb") as fh:
         echo "Refresh:  every $(cfg refreshSeconds)s"
         if server_ok "$port"; then
             echo "Server:   answering on 127.0.0.1:$port"
+            source=$(curl -fsS --max-time 30 "http://127.0.0.1:$port/count" 2>/dev/null \
+                | python3 -c 'import json, sys
+try:
+    print(json.load(sys.stdin).get("source", ""))
+except Exception:
+    print("")' 2>/dev/null || true)
+            case "${source:-}" in
+                profile) echo "Reading:  your GitHub profile page" ;;
+                api)     echo "Reading:  the GitHub API (profile page unreadable)" ;;
+            esac
         elif launchctl print "gui/$(id -u)/$AGENT_SERVER" >/dev/null 2>&1; then
             echo "Server:   loaded but not answering on $port (see $DATA/server.log)"
         else
