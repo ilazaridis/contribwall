@@ -8,9 +8,12 @@ token to configure here and no username baked in anywhere.
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +23,7 @@ CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config
 CONFIG = os.path.join(CONFIG_HOME, "contribwall", "config.json")
 
 DEFAULTS = {
+    "user": "",          # GitHub login; empty asks the GitHub CLI once
     "days": 14,          # how many days of history to chart
     "display": "",       # display name fragment; empty picks a second screen
     "port": 8723,
@@ -45,6 +49,9 @@ QUERY = """
 }
 """
 
+PROFILE_URL = "https://github.com/users/%s/contributions"
+
+_login = None
 _lock = threading.Lock()
 _fetch_lock = threading.Lock()
 _cache = {"data": None, "fetched": 0.0, "error": None, "retry_after": 0.0}
@@ -122,7 +129,66 @@ def save_setting(key, raw):
     return True
 
 
-def fetch_data():
+def github_login(config):
+    """The login to read contributions for; asked of the GitHub CLI once."""
+    global _login
+    if config.get("user"):
+        return config["user"]
+    if _login:
+        return _login
+    proc = subprocess.run(
+        [gh_bin(), "api", "user", "--jq", ".login"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError("could not work out your GitHub login: "
+                           + (proc.stderr or proc.stdout).strip()[:200])
+    _login = proc.stdout.strip()
+    return _login
+
+
+def parse_calendar(html):
+    """Pull {date: count} out of the profile contribution grid."""
+    dates = {}
+    for tag in re.findall(r'<td[^>]*ContributionCalendar-day[^>]*>', html):
+        cell = re.search(r'id="([^"]+)"', tag)
+        date = re.search(r'data-date="(\d{4}-\d{2}-\d{2})"', tag)
+        if cell and date:
+            dates[cell.group(1)] = date.group(1)
+
+    counts = {}
+    for cell, text in re.findall(r'<tool-tip[^>]*for="([^"]+)"[^>]*>([^<]*)</tool-tip>', html):
+        date = dates.get(cell)
+        if date is None:
+            continue
+        found = re.match(r'([\d,]+)\s+contributions?\s+on', text.strip())
+        counts[date] = int(found.group(1).replace(",", "")) if found else 0
+
+    return dict((date, counts.get(date, 0)) for date in dates.values())
+
+
+def fetch_profile(login):
+    """Read the same grid github.com/<login> shows, so the totals agree.
+
+    The GraphQL calendar disagrees with the profile by a few contributions --
+    it buckets days in UTC rather than your timezone, and the two sometimes
+    simply differ -- and the number on the wall should be the one on the site.
+    """
+    request = urllib.request.Request(
+        PROFILE_URL % urllib.parse.quote(login, safe=""),
+        headers={"User-Agent": "contribwall", "Accept": "text/html"},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        html = response.read().decode("utf-8", "replace")
+
+    days = parse_calendar(html)
+    if len(days) < 300:
+        raise RuntimeError("profile page gave %d days, expected a full year" % len(days))
+    return days
+
+
+def fetch_graphql():
+    """Fallback for when the profile page cannot be read or parsed."""
     proc = subprocess.run(
         [gh_bin(), "api", "graphql", "-f", "query=" + QUERY],
         capture_output=True, text=True, timeout=30,
@@ -131,28 +197,42 @@ def fetch_data():
         raise RuntimeError((proc.stderr or proc.stdout).strip()[:300])
     payload = json.loads(proc.stdout)
     calendar = payload["data"]["viewer"]["contributionsCollection"]["contributionCalendar"]
-
-    today = datetime.date.today().isoformat()
-    days = [
-        day
+    return dict(
+        (day["date"], int(day["contributionCount"]))
         for week in calendar["weeks"]
         for day in week["contributionDays"]
-        if day["date"] <= today
-    ]
-    days.sort(key=lambda d: d["date"])
+    )
+
+
+def build(days, source):
+    """Turn {date: count} into the payload the page draws."""
+    today = datetime.date.today().isoformat()
+    dated = sorted(d for d in days if d <= today)
 
     recent = []
-    for day in days[-MAX_DAYS:]:
-        date = datetime.date(*[int(part) for part in day["date"].split("-")])
+    for key in dated[-MAX_DAYS:]:
+        date = datetime.date(*[int(part) for part in key.split("-")])
         recent.append({
-            "date": day["date"],
-            "count": int(day["contributionCount"]),
+            "date": key,
+            "count": days[key],
             "dow": DOW[date.weekday()],
             "dom": date.day,
             "wd": date.weekday(),
         })
 
-    return {"count": int(calendar["totalContributions"]), "days": recent}
+    # The headline is the whole year, the bars are only the tail of it.
+    return {"count": sum(days[d] for d in dated), "days": recent, "source": source}
+
+
+def fetch_data():
+    config = load_config()
+    try:
+        return build(fetch_profile(github_login(config)), "profile")
+    except Exception as profile_error:
+        try:
+            return build(fetch_graphql(), "api")
+        except Exception:
+            raise profile_error
 
 
 def _fresh(now):
