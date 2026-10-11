@@ -59,17 +59,29 @@ server_ok() {
     curl -fsS --max-time 5 "http://127.0.0.1:$1/health" 2>/dev/null | grep -q contribwall
 }
 
-list_displays() { osascript -l JavaScript "$DATA/pick-display.js" --list; }
+list_displays() { osascript -l JavaScript "$DATA/pick-display.js" --list "${1:-}"; }
+
+# Two monitors can share a name, so remember which match was meant.
+qualify() {
+    name="$1"
+    position="$2"
+    total=$(list_displays | cut -f2 | grep -Fxc -- "$name" 2>/dev/null || true)
+    if [ "${total:-1}" -gt 1 ]; then
+        nth=$(list_displays | cut -f2 | sed -n "1,${position}p" | grep -Fxc -- "$name" 2>/dev/null || true)
+        printf '%s#%s' "$name" "${nth:-1}"
+    else
+        printf '%s' "$name"
+    fi
+}
 
 show_displays() {
     current=$(cfg display)
     printf '\n'
-    list_displays | while IFS="$TAB" read -r index name size main; do
-        marker="  "
-        if [ -n "$current" ]; then
-            case "$(printf '%s' "$name" | tr 'A-Z' 'a-z')" in
-                *"$(printf '%s' "$current" | tr 'A-Z' 'a-z')"*) marker=" *" ;;
-            esac
+    list_displays "$current" | while IFS="$TAB" read -r index name size main chosen; do
+        if [ "$chosen" = "*" ]; then
+            marker=" *"
+        else
+            marker="  "
         fi
         printf '%s %s) %-26s %-11s %s\n' "$marker" "$index" "$name" "$size" "$main"
     done
@@ -104,7 +116,8 @@ case "${1:-open}" in
         fi
 
         if [ -n "${2:-}" ]; then
-            if ! list_displays | cut -f2 | grep -Fqi -- "$2"; then
+            bare=$(printf '%s' "$2" | sed 's/#[0-9]*$//')
+            if ! list_displays | cut -f2 | grep -Fqi -- "$bare"; then
                 echo "contribwall: no connected screen matches \"$2\"." >&2
                 echo "Run 'contribwall displays' to see them." >&2
                 exit 1
@@ -133,7 +146,7 @@ case "${1:-open}" in
             echo "contribwall: pick a number between 1 and $count." >&2
             exit 1
         fi
-        chosen=$(list_displays | sed -n "${choice}p" | cut -f2)
+        chosen=$(qualify "$(list_displays | sed -n "${choice}p" | cut -f2)" "$choice")
         cfg_set display "$chosen"
         printf '\n  Display: %s\n\n' "$chosen"
         exec "$0"

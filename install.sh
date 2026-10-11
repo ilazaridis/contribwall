@@ -189,7 +189,14 @@ if [ "$screens" -gt 1 ] && [ -z "$configured" ] && can_ask; then
         *[!0-9]*) say "Not a number; using the second screen." ;;
         *)
             if [ "$choice" -ge 1 ] && [ "$choice" -le "$screens" ]; then
-                chosen=$(osascript -l JavaScript "$DATA/pick-display.js" --list | sed -n "${choice}p" | cut -f2)
+                names=$(osascript -l JavaScript "$DATA/pick-display.js" --list | cut -f2)
+                chosen=$(printf '%s\n' "$names" | sed -n "${choice}p")
+                total=$(printf '%s\n' "$names" | grep -Fxc -- "$chosen" 2>/dev/null || true)
+                if [ "${total:-1}" -gt 1 ]; then
+                    # Two monitors share this name; remember which one.
+                    nth=$(printf '%s\n' "$names" | sed -n "1,${choice}p" | grep -Fxc -- "$chosen" 2>/dev/null || true)
+                    chosen="$chosen#${nth:-1}"
+                fi
                 "$PYTHON" "$DATA/server.py" --set display "$chosen"
                 say "Using $chosen."
             else
