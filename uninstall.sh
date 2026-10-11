@@ -36,7 +36,7 @@ for rc in "$HOME/.zshrc" "$HOME/.bash_profile"; do
 path, marker = sys.argv[1], sys.argv[2]
 with open(path) as fh:
     lines = fh.readlines()
-OURS = 'export PATH="$HOME/.local/bin:$PATH"'
+OURS = "export PATH=\"$HOME/.local/bin:$PATH\""
 out, drop_next = [], False
 for line in lines:
     if drop_next:
