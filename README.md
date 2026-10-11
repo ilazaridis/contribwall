@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/ilazaridis/contribwall/main/install
 Rather not use a terminal? [Download the zip](https://github.com/ilazaridis/contribwall/archive/refs/heads/main.zip),
 unzip it, and double-click **Install.command**.
 
-Your screen lights up. It comes back on its own after a reboot.
+It asks which screen to use, then lights it up. It comes back on its own after a reboot.
 
 <br>
 
@@ -33,8 +33,9 @@ Your screen lights up. It comes back on its own after a reboot.
 
 ```sh
 contribwall                 # put it on screen
+contribwall displays        # list your screens
+contribwall display         # choose one
 contribwall range month     # week · 14 · month · any 1–90
-contribwall display Dell    # pick a screen by name
 contribwall awake on        # stop the screens sleeping
 contribwall off             # take it off
 ```
@@ -45,33 +46,36 @@ contribwall off             # take it off
 
 ## Needs
 
-**macOS** · **[GitHub CLI](https://cli.github.com)**, signed in · **Chrome**, Brave, Edge or Chromium
+**macOS** · **python3 3.7+** (`xcode-select --install`) · **[GitHub CLI](https://cli.github.com)**, signed in ·
+**Chrome**, Brave, Edge or Chromium in `/Applications`
 
-It reads *your* contributions through your own `gh` login, so private ones count
-and there's no token to paste anywhere.
+It reads *your* contributions through your own `gh` login, so there's no token to
+paste anywhere. Private contributions count too, once you grant `read:user` —
+the installer offers to ask for it.
 
 <br>
 
 ## Settings
 
-`~/.config/contribwall/config.json` — changes land within a minute, nothing to restart.
+`~/.config/contribwall/config.json`
 
-| | |
-|---|---|
-| `days` | how far back the bars go, `1`–`90` |
-| `display` | screen name fragment, or `""` for the second one |
-| `ramp` | `darker` or `brighter` — which end of the green is a busy day |
-| `refreshSeconds` | how often it checks |
-| `port` | local port, default `8723` |
+| | | |
+|---|---|---|
+| `days` | how far back the bars go, `1`–`90` | within a minute |
+| `ramp` | `darker` or `brighter` — which end of the green is a busy day | within a minute |
+| `refreshSeconds` | how often it checks, `5`–`3600` | within a minute |
+| `display` | screen name fragment, or `""` for the second one | run `contribwall` |
+| `port` | local port, default `8723` | restart the server, then `contribwall` |
 
 <br>
 
 ## How it works
 
 A small Python server asks the GitHub CLI for your contribution calendar and
-serves one local page. A browser window sits on your screen in fullscreen and
-re-polls it every minute. Two `launchd` agents keep the server up and put the
-window back after a reboot. Nothing leaves your machine except the GitHub query.
+serves one page on `127.0.0.1`. A browser window sits fullscreen on your screen
+and re-polls it every minute. Two `launchd` agents keep the server up and put the
+window back after a reboot. contribwall itself talks to nothing but GitHub and
+that local port.
 
 <br>
 
