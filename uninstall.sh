@@ -36,13 +36,16 @@ for rc in "$HOME/.zshrc" "$HOME/.bash_profile"; do
 path, marker = sys.argv[1], sys.argv[2]
 with open(path) as fh:
     lines = fh.readlines()
-out, skip = [], 0
+OURS = 'export PATH="$HOME/.local/bin:$PATH"'
+out, drop_next = [], False
 for line in lines:
-    if skip:
-        skip -= 1
-        continue
+    if drop_next:
+        drop_next = False
+        # Only ever remove the exact line the installer wrote.
+        if line.strip() == OURS:
+            continue
     if line.strip() == marker:
-        skip = 1          # also drop the export line that follows
+        drop_next = True
         if out and out[-1].strip() == "":
             out.pop()
         continue
