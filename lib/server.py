@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,6 +28,7 @@ DEFAULTS = {
 }
 
 CACHE_TTL = 45.0
+ERROR_COOLDOWN = 20.0
 MAX_DAYS = 90
 DOW = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
@@ -44,7 +46,8 @@ QUERY = """
 """
 
 _lock = threading.Lock()
-_cache = {"data": None, "fetched": 0.0, "error": None}
+_fetch_lock = threading.Lock()
+_cache = {"data": None, "fetched": 0.0, "error": None, "retry_after": 0.0}
 
 
 def gh_bin():
@@ -77,6 +80,46 @@ def load_config():
     except (TypeError, ValueError):
         config["port"] = DEFAULTS["port"]
     return config
+
+
+def save_setting(key, raw):
+    """Validate and store one setting. Returns True when it was written."""
+    if key not in DEFAULTS:
+        sys.stderr.write("contribwall: unknown setting %r\n" % key)
+        return False
+    if isinstance(DEFAULTS[key], int):
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            sys.stderr.write("contribwall: %s must be a whole number\n" % key)
+            return False
+        bounds = {"days": (1, MAX_DAYS), "refreshSeconds": (5, 3600), "port": (1, 65535)}
+        low, high = bounds.get(key, (None, None))
+        if low is not None and not (low <= value <= high):
+            sys.stderr.write("contribwall: %s must be %d-%d\n" % (key, low, high))
+            return False
+    else:
+        value = raw
+        if key == "ramp" and value not in ("darker", "brighter"):
+            sys.stderr.write("contribwall: ramp must be darker or brighter\n")
+            return False
+
+    try:
+        with open(CONFIG) as fh:
+            stored = json.load(fh)
+        if not isinstance(stored, dict):
+            stored = {}
+    except Exception:
+        stored = {}
+    stored[key] = value
+
+    directory = os.path.dirname(CONFIG)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(CONFIG, "w") as fh:
+        json.dump(stored, fh, indent=2)
+        fh.write("\n")
+    return True
 
 
 def fetch_data():
@@ -112,22 +155,36 @@ def fetch_data():
     return {"count": int(calendar["totalContributions"]), "days": recent}
 
 
+def _fresh(now):
+    return _cache["data"] is not None and now - _cache["fetched"] < CACHE_TTL
+
+
 def current_data():
     """Return (data, error). A failed refresh keeps the last good data."""
+    now = time.time()
     with _lock:
-        if _cache["data"] is not None and time.time() - _cache["fetched"] < CACHE_TTL:
+        if _fresh(now) or now < _cache["retry_after"]:
             return _cache["data"], _cache["error"]
-    try:
-        data = fetch_data()
-    except Exception as exc:
+
+    # One fetch at a time; parallel requests wait and reuse the result rather
+    # than each spawning their own `gh` process.
+    with _fetch_lock:
         with _lock:
-            _cache["error"] = "%s: %s" % (type(exc).__name__, exc)
-            return _cache["data"], _cache["error"]
-    with _lock:
-        _cache["data"] = data
-        _cache["fetched"] = time.time()
-        _cache["error"] = None
-    return data, None
+            if _fresh(time.time()):
+                return _cache["data"], _cache["error"]
+        try:
+            data = fetch_data()
+        except Exception as exc:
+            with _lock:
+                _cache["error"] = "%s: %s" % (type(exc).__name__, exc)
+                _cache["retry_after"] = time.time() + ERROR_COOLDOWN
+                return _cache["data"], _cache["error"]
+        with _lock:
+            _cache["data"] = data
+            _cache["fetched"] = time.time()
+            _cache["error"] = None
+            _cache["retry_after"] = 0.0
+        return data, None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -146,6 +203,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             with open(os.path.join(HERE, "index.html"), "rb") as fh:
                 self._send(fh.read(), "text/html; charset=utf-8")
+        elif path == "/health":
+            self._send(json.dumps({"app": "contribwall"}).encode(), "application/json")
         elif path == "/count":
             config = load_config()
             data, error = current_data()
@@ -175,4 +234,12 @@ def serve(port):
 
 
 if __name__ == "__main__":
+    # `server.py --get <key>` lets the CLI read settings through exactly the
+    # same validation the server uses, so the two can never disagree.
+    if len(sys.argv) == 3 and sys.argv[1] == "--get":
+        value = load_config().get(sys.argv[2], "")
+        print(value if value is not None else "")
+        sys.exit(0)
+    if len(sys.argv) == 4 and sys.argv[1] == "--set":
+        sys.exit(0 if save_setting(sys.argv[2], sys.argv[3]) else 1)
     serve(load_config()["port"]).serve_forever()
