@@ -37,11 +37,10 @@ MAX_DAYS = 90
 DOW = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
 QUERY = """
-{
-  viewer {
+query($login: String!) {
+  user(login: $login) {
     contributionsCollection {
       contributionCalendar {
-        totalContributions
         weeks { contributionDays { date contributionCount } }
       }
     }
@@ -161,10 +160,22 @@ def parse_calendar(html):
         date = dates.get(cell)
         if date is None:
             continue
-        found = re.match(r'([\d,]+)\s+contributions?\s+on', text.strip())
-        counts[date] = int(found.group(1).replace(",", "")) if found else 0
+        label = text.strip()
+        found = re.match(r'([\d,]+)\s+contributions?\s+on', label)
+        if found:
+            counts[date] = int(found.group(1).replace(",", ""))
+        elif label.lower().startswith("no contributions on"):
+            counts[date] = 0
+        # Anything else is left unaccounted for on purpose.
 
-    return dict((date, counts.get(date, 0)) for date in dates.values())
+    # If the markup ever changes, every day would read as zero and the wall
+    # would confidently show 0. Refuse the parse instead, so the API fallback
+    # gets its turn.
+    unread = set(dates.values()) - set(counts)
+    if unread:
+        raise RuntimeError("could not read %d of %d days from the profile page"
+                           % (len(unread), len(dates)))
+    return counts
 
 
 def fetch_profile(login):
@@ -187,16 +198,16 @@ def fetch_profile(login):
     return days
 
 
-def fetch_graphql():
+def fetch_graphql(login):
     """Fallback for when the profile page cannot be read or parsed."""
     proc = subprocess.run(
-        [gh_bin(), "api", "graphql", "-f", "query=" + QUERY],
+        [gh_bin(), "api", "graphql", "-f", "query=" + QUERY, "-f", "login=" + login],
         capture_output=True, text=True, timeout=30,
     )
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout).strip()[:300])
     payload = json.loads(proc.stdout)
-    calendar = payload["data"]["viewer"]["contributionsCollection"]["contributionCalendar"]
+    calendar = payload["data"]["user"]["contributionsCollection"]["contributionCalendar"]
     return dict(
         (day["date"], int(day["contributionCount"]))
         for week in calendar["weeks"]
@@ -225,12 +236,12 @@ def build(days, source):
 
 
 def fetch_data():
-    config = load_config()
+    login = github_login(load_config())
     try:
-        return build(fetch_profile(github_login(config)), "profile")
+        return build(fetch_profile(login), "profile")
     except Exception as profile_error:
         try:
-            return build(fetch_graphql(), "api")
+            return build(fetch_graphql(login), "api")
         except Exception:
             raise profile_error
 
